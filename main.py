@@ -1,8 +1,6 @@
 from fastapi import FastAPI, UploadFile, Form
 import os
 from typing import Dict
-import smtplib
-from email.message import EmailMessage
 import shutil
 
 app = FastAPI()
@@ -60,36 +58,13 @@ async def upload_doc(
     missing = [doc for doc, done in collected_info[email].items() if not done]
 
     if not missing:
-        # All docs collected → send email
-        await send_email(email, folder)
-
-        # Cleanup
-        shutil.rmtree(folder)
-        del collected_info[email]
-
-        return {"status": "complete", "message": "All documents received. Email sent."}
+        # Instead of sending email, signal orchestrator
+        return {
+            "status": "ready_for_email",
+            "email": email,
+            "attachments": [
+                os.path.join(folder, f"{doc}.pdf") for doc in required_docs
+            ],
+        }
 
     return {"status": "incomplete", "missing_docs": missing, "next_doc": missing[0]}
-
-
-async def send_email(user_email: str, folder: str):
-    hr_email = "shreya.p@nighthack.in"
-    msg = EmailMessage()
-    msg["From"] = "noreply@example.com"
-    msg["To"] = hr_email
-    msg["Cc"] = "shreya.p@nighthack.in"
-    msg["Subject"] = f"New Employee Onboarding - {user_email}"
-    msg.set_content(
-        f"All required documents for {user_email} have been collected and are attached."
-    )
-
-    # Attach PDFs
-    for filename in os.listdir(folder):
-        filepath = os.path.join(folder, filename)
-        with open(filepath, "rb") as fp:
-            msg.add_attachment(fp.read(), maintype="application", subtype="pdf", filename=filename)
-
-    # Mailtrap SMTP (blocking for small apps)
-    with smtplib.SMTP("sandbox.smtp.mailtrap.io", 2525) as s:
-        s.login("b6c2a4b4798d4f", "fad68538a2eee8")
-        s.send_message(msg)
