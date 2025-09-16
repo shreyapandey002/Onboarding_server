@@ -65,6 +65,12 @@ async def upload_doc(
     # Determine missing documents
     missing_docs = [doc for doc, done in collected_info[email].items() if not done]
 
+    # Build doc status map (Completed/Incompleted)
+    doc_status = {
+        doc: ("completed" if done else "incompleted")
+        for doc, done in collected_info[email].items()
+    }
+
     if not missing_docs:
         # All docs collected → send email
         await send_email(email, folder)
@@ -73,7 +79,11 @@ async def upload_doc(
         shutil.rmtree(folder)
         del collected_info[email]
 
-        return {"status": "complete", "message": "All documents received. Email sent."}
+        return {
+            "status": "complete",
+            "message": "All documents received. Email sent.",
+            "doc_status": doc_status,
+        }
 
     # Return next document to prompt user for
     next_doc = missing_docs[0]
@@ -82,8 +92,8 @@ async def upload_doc(
         "message": f"{normalized_doc} uploaded successfully.",
         "missing_docs": missing_docs,
         "next_doc": next_doc,
+        "doc_status": doc_status,
     }
-
 
 async def send_email(user_email: str, folder: str):
     """
