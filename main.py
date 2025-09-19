@@ -1,20 +1,33 @@
 from fastapi import FastAPI, UploadFile, Form
 import os
+import json
+import shutil
 from typing import Dict
 import smtplib
 from email.message import EmailMessage
-import shutil
 
 app = FastAPI()
 
 # Required documents
 required_docs = ["aadhar", "pan", "release_letter"]
 
-# In-memory tracking per user
-collected_info: Dict[str, Dict[str, bool]] = {}
+# JSON file for persistent tracking
+COLLECTED_JSON = "collected_info.json"
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+def load_collected_info() -> Dict[str, Dict[str, bool]]:
+    if os.path.exists(COLLECTED_JSON):
+        with open(COLLECTED_JSON, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_collected_info(collected_info: Dict[str, Dict[str, bool]]):
+    with open(COLLECTED_JSON, "w") as f:
+        json.dump(collected_info, f)
 
 
 @app.post("/init_user/")
@@ -22,9 +35,15 @@ async def init_user(email: str = Form(...)):
     """
     Initialize a new onboarding session for a user.
     """
+    collected_info = load_collected_info()
+
     folder = os.path.join(UPLOAD_DIR, email)
     os.makedirs(folder, exist_ok=True)
-    collected_info[email] = {doc: False for doc in required_docs}
+
+    if email not in collected_info:
+        collected_info[email] = {doc: False for doc in required_docs}
+        save_collected_info(collected_info)
+
     return {"status": "initialized", "required_docs": required_docs, "next_doc": required_docs[0]}
 
 
@@ -35,6 +54,8 @@ async def upload_doc(
     """
     Upload a document for a user.
     """
+    collected_info = load_collected_info()
+
     if email not in collected_info:
         return {"status": "error", "message": "User not initialized"}
 
@@ -59,8 +80,9 @@ async def upload_doc(
     with open(file_path, "wb") as f:
         f.write(await file.read())
 
-    # Mark document as collected
+    # Mark document as collected and save to JSON
     collected_info[email][normalized_doc] = True
+    save_collected_info(collected_info)
 
     # Determine missing documents
     missing_docs = [doc for doc, done in collected_info[email].items() if not done]
@@ -78,6 +100,7 @@ async def upload_doc(
         # Cleanup
         shutil.rmtree(folder)
         del collected_info[email]
+        save_collected_info(collected_info)
 
         return {
             "status": "complete",
@@ -94,6 +117,7 @@ async def upload_doc(
         "next_doc": next_doc,
         "doc_status": doc_status,
     }
+
 
 async def send_email(user_email: str, folder: str):
     """
