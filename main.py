@@ -1,8 +1,7 @@
 from fastapi import FastAPI, UploadFile, Form
 import os
-import json
 import shutil
-from typing import Dict
+from typing import List
 import smtplib
 from email.message import EmailMessage
 
@@ -11,40 +10,35 @@ app = FastAPI()
 # Required documents
 required_docs = ["aadhar", "pan", "release_letter"]
 
-# JSON file for persistent tracking
-COLLECTED_JSON = "collected_info.json"
-
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-
-def load_collected_info() -> Dict[str, Dict[str, bool]]:
-    if os.path.exists(COLLECTED_JSON):
-        with open(COLLECTED_JSON, "r") as f:
-            return json.load(f)
-    return {}
-
-
-def save_collected_info(collected_info: Dict[str, Dict[str, bool]]):
-    with open(COLLECTED_JSON, "w") as f:
-        json.dump(collected_info, f)
 
 
 @app.post("/init_user/")
 async def init_user(email: str = Form(...)):
     """
     Initialize a new onboarding session for a user.
+    Stateless: just ensures the folder exists.
     """
-    collected_info = load_collected_info()
-
     folder = os.path.join(UPLOAD_DIR, email)
     os.makedirs(folder, exist_ok=True)
 
-    if email not in collected_info:
-        collected_info[email] = {doc: False for doc in required_docs}
-        save_collected_info(collected_info)
+    # Determine which documents are already uploaded (if any)
+    uploaded_docs = [
+        doc.split(".pdf")[0]
+        for doc in os.listdir(folder)
+        if doc.endswith(".pdf") and doc.split(".pdf")[0] in required_docs
+    ]
 
-    return {"status": "initialized", "required_docs": required_docs, "next_doc": required_docs[0]}
+    missing_docs = [doc for doc in required_docs if doc not in uploaded_docs]
+
+    return {
+        "status": "initialized",
+        "required_docs": required_docs,
+        "next_doc": missing_docs[0] if missing_docs else None,
+        "uploaded_docs": uploaded_docs,
+        "missing_docs": missing_docs,
+    }
 
 
 @app.post("/upload_doc/")
@@ -53,16 +47,16 @@ async def upload_doc(
 ):
     """
     Upload a document for a user.
+    Stateless: checks uploaded files to track progress.
     """
-    collected_info = load_collected_info()
-
-    if email not in collected_info:
+    folder = os.path.join(UPLOAD_DIR, email)
+    if not os.path.exists(folder):
         return {"status": "error", "message": "User not initialized"}
 
     if not file:
         return {"status": "error", "message": "No file uploaded"}
 
-    # Normalize doc_type (case-insensitive)
+    # Normalize doc_type
     doc_map = {doc.lower(): doc for doc in required_docs}
     normalized_doc = doc_map.get(doc_type.strip().lower())
 
@@ -73,34 +67,27 @@ async def upload_doc(
         }
 
     # Save uploaded file
-    folder = os.path.join(UPLOAD_DIR, email)
-    os.makedirs(folder, exist_ok=True)
     file_path = os.path.join(folder, f"{normalized_doc}.pdf")
-
     with open(file_path, "wb") as f:
         f.write(await file.read())
 
-    # Mark document as collected and save to JSON
-    collected_info[email][normalized_doc] = True
-    save_collected_info(collected_info)
+    # Determine uploaded and missing documents
+    uploaded_docs = [
+        doc.split(".pdf")[0]
+        for doc in os.listdir(folder)
+        if doc.endswith(".pdf") and doc.split(".pdf")[0] in required_docs
+    ]
+    missing_docs = [doc for doc in required_docs if doc not in uploaded_docs]
 
-    # Determine missing documents
-    missing_docs = [doc for doc, done in collected_info[email].items() if not done]
-
-    # Build doc status map (Completed/Incompleted)
-    doc_status = {
-        doc: ("completed" if done else "incompleted")
-        for doc, done in collected_info[email].items()
-    }
+    # Build doc_status map
+    doc_status = {doc: ("completed" if doc in uploaded_docs else "incompleted") for doc in required_docs}
 
     if not missing_docs:
-        # All docs collected → send email
+        # All documents uploaded → send email
         await send_email(email, folder)
 
         # Cleanup
         shutil.rmtree(folder)
-        del collected_info[email]
-        save_collected_info(collected_info)
 
         return {
             "status": "complete",
@@ -108,7 +95,6 @@ async def upload_doc(
             "doc_status": doc_status,
         }
 
-    # Return next document to prompt user for
     next_doc = missing_docs[0]
     return {
         "status": "incomplete",
